@@ -1,0 +1,55 @@
+name: build-caddy-l4
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'caddy-l4-*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        goos: [linux]
+        goarch: [amd64, arm64]
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Go (stable)
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Install xcaddy
+        run: go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
+
+      - name: Build caddy with layer4
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          mkdir -p build
+          BIN_NAME="caddy-l4-${{ matrix.goos }}-${{ matrix.goarch }}"
+          "$HOME/go/bin/xcaddy" build \
+            --with github.com/mholt/caddy-l4 \
+            --output "build/${BIN_NAME}"
+          chmod +x "build/${BIN_NAME}"
+
+      - name: Pack tar.gz
+        run: |
+          cd build
+          BIN_NAME="caddy-l4-${{ matrix.goos }}-${{ matrix.goarch }}"
+          TAR_NAME="${BIN_NAME}.tar.gz"
+          tar -czf "${TAR_NAME}" "${BIN_NAME}"
+          echo "Created ${TAR_NAME}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: caddy-l4-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: build/caddy-l4-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz
