@@ -3,8 +3,10 @@ name: build-caddy-l4
 on:
   workflow_dispatch:
   push:
-    tags:
-      - 'caddy-l4-*'
+    branches: [ main ]
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -18,6 +20,17 @@ jobs:
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get latest Caddy tag
+        id: caddy
+        run: |
+          url=$(curl -fsSIL -o /dev/null -w '%{url_effective}' \
+            https://github.com/caddyserver/caddy/releases/latest)
+          tag="${url##*/}"
+          echo "Latest Caddy tag: ${tag}"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
 
       - name: Setup Go (stable)
         uses: actions/setup-go@v5
@@ -25,31 +38,47 @@ jobs:
           go-version: stable
 
       - name: Install xcaddy
-        run: go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
+        run: |
+          go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: Build caddy with layer4
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 0
+          CADDY_TAG: ${{ steps.caddy.outputs.tag }}
         run: |
           mkdir -p build
-          BIN_NAME="caddy-l4-${{ matrix.goos }}-${{ matrix.goarch }}"
-          "$HOME/go/bin/xcaddy" build \
+          BIN_NAME="caddy-l4-${GOOS}-${GOARCH}"
+          echo "Building ${BIN_NAME} based on Caddy ${CADDY_TAG} ..."
+          xcaddy build "${CADDY_TAG}" \
             --with github.com/mholt/caddy-l4 \
             --output "build/${BIN_NAME}"
           chmod +x "build/${BIN_NAME}"
 
       - name: Pack tar.gz
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CADDY_TAG: ${{ steps.caddy.outputs.tag }}
         run: |
           cd build
-          BIN_NAME="caddy-l4-${{ matrix.goos }}-${{ matrix.goarch }}"
-          TAR_NAME="${BIN_NAME}.tar.gz"
+          BIN_NAME="caddy-l4-${GOOS}-${GOARCH}"
+          TAR_NAME="${BIN_NAME}-${CADDY_TAG}.tar.gz"
           tar -czf "${TAR_NAME}" "${BIN_NAME}"
           echo "Created ${TAR_NAME}"
+          ls -lh
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
-          name: caddy-l4-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: build/caddy-l4-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz
+          tag_name: ${{ steps.caddy.outputs.tag }}
+          name: "caddy-l4 ${{ steps.caddy.outputs.tag }}"
+          draft: false
+          prerelease: false
+          files: |
+            build/*.tar.gz
+          overwrite: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
