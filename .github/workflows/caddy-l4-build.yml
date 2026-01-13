@@ -23,45 +23,69 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Get latest Caddy tag
-        id: caddy
+      - name: Get latest Caddy stable tag (for release name only)
+        id: caddy_tag
         run: |
           url=$(curl -fsSIL -o /dev/null -w '%{url_effective}' \
             https://github.com/caddyserver/caddy/releases/latest)
           tag="${url##*/}"
-          echo "Latest Caddy tag: ${tag}"
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "Latest stable tag: ${tag}"
+
+      - name: Resolve upstream master HEAD SHAs (caddy / caddy-l4 / xcaddy)
+        id: upstream
+        run: |
+          caddy_sha=$(git ls-remote https://github.com/caddyserver/caddy.git refs/heads/master | awk '{print $1}')
+          l4_sha=$(git ls-remote https://github.com/mholt/caddy-l4.git refs/heads/master | awk '{print $1}')
+          xcaddy_sha=$(git ls-remote https://github.com/caddyserver/xcaddy.git refs/heads/master | awk '{print $1}')
+
+          echo "caddy_sha=${caddy_sha}" >> "$GITHUB_OUTPUT"
+          echo "l4_sha=${l4_sha}" >> "$GITHUB_OUTPUT"
+          echo "xcaddy_sha=${xcaddy_sha}" >> "$GITHUB_OUTPUT"
+
+          echo "Caddy   master HEAD: ${caddy_sha}"
+          echo "caddy-l4 master HEAD: ${l4_sha}"
+          echo "xcaddy  master HEAD: ${xcaddy_sha}"
 
       - name: Setup Go (stable)
         uses: actions/setup-go@v5
         with:
           go-version: stable
 
-      - name: Install xcaddy
+      - name: Install xcaddy (from master HEAD commit)
+        env:
+          XCADDY_SHA: ${{ steps.upstream.outputs.xcaddy_sha }}
         run: |
-          go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
+          go install github.com/caddyserver/xcaddy/cmd/xcaddy@${XCADDY_SHA}
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          xcaddy version || true
 
-      - name: Build caddy with layer4
+      - name: Build caddy with layer4 (all from master HEAD commits)
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 0
-          CADDY_TAG: ${{ steps.caddy.outputs.tag }}
+          CADDY_SHA: ${{ steps.upstream.outputs.caddy_sha }}
+          L4_SHA: ${{ steps.upstream.outputs.l4_sha }}
         run: |
           mkdir -p build
           BIN_NAME="caddy-l4-${GOOS}-${GOARCH}"
-          echo "Building ${BIN_NAME} based on Caddy ${CADDY_TAG} ..."
-          xcaddy build "${CADDY_TAG}" \
-            --with github.com/mholt/caddy-l4 \
+          echo "Building ${BIN_NAME} from:"
+          echo "  Caddy    = ${CADDY_SHA}"
+          echo "  caddy-l4 = ${L4_SHA}"
+
+          xcaddy build "${CADDY_SHA}" \
+            --with github.com/mholt/caddy-l4@${L4_SHA} \
             --output "build/${BIN_NAME}"
+
           chmod +x "build/${BIN_NAME}"
+          "build/${BIN_NAME}" version || true
 
       - name: Pack tar.gz
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-          CADDY_TAG: ${{ steps.caddy.outputs.tag }}
+          CADDY_TAG: ${{ steps.caddy_tag.outputs.tag }}
         run: |
           cd build
           BIN_NAME="caddy-l4-${GOOS}-${GOARCH}"
@@ -73,12 +97,19 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.caddy.outputs.tag }}
-          name: "caddy-l4 ${{ steps.caddy.outputs.tag }}"
+          tag_name: ${{ steps.caddy_tag.outputs.tag }}
+          name: "caddy-l4 ${{ steps.caddy_tag.outputs.tag }}"
           draft: false
           prerelease: false
           files: |
             build/*.tar.gz
           overwrite: true
+          body: |
+            Tag name follows upstream latest stable tag: ${{ steps.caddy_tag.outputs.tag }}
+            Built from upstream master HEAD commits:
+            - caddy:    ${{ steps.upstream.outputs.caddy_sha }}
+            - caddy-l4: ${{ steps.upstream.outputs.l4_sha }}
+            - xcaddy:   ${{ steps.upstream.outputs.xcaddy_sha }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          
