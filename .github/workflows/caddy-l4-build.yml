@@ -11,99 +11,61 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-
     strategy:
+      fail-fast: false
       matrix:
-        goos: [linux]
         goarch: [amd64, arm64]
 
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Get latest Caddy stable tag (for release name only)
-        id: caddy_tag
+      - id: caddy_tag
         run: |
-          url=$(curl -fsSIL -o /dev/null -w '%{url_effective}' \
-            https://github.com/caddyserver/caddy/releases/latest)
-          tag="${url##*/}"
-          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
-          echo "Latest stable tag: ${tag}"
+          url=$(curl -fsSIL -o /dev/null -w '%{url_effective}' https://github.com/caddyserver/caddy/releases/latest)
+          echo "tag=${url##*/}" >> "$GITHUB_OUTPUT"
 
-      - name: Resolve upstream master HEAD SHAs (caddy / caddy-l4 / xcaddy)
-        id: upstream
+      - id: upstream
         run: |
-          caddy_sha=$(git ls-remote https://github.com/caddyserver/caddy.git refs/heads/master | awk '{print $1}')
-          l4_sha=$(git ls-remote https://github.com/mholt/caddy-l4.git refs/heads/master | awk '{print $1}')
-          xcaddy_sha=$(git ls-remote https://github.com/caddyserver/xcaddy.git refs/heads/master | awk '{print $1}')
+          echo "caddy_sha=$(git ls-remote https://github.com/caddyserver/caddy.git refs/heads/master | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          echo "l4_sha=$(git ls-remote https://github.com/mholt/caddy-l4.git refs/heads/master | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          echo "xcaddy_sha=$(git ls-remote https://github.com/caddyserver/xcaddy.git refs/heads/master | awk '{print $1}')" >> "$GITHUB_OUTPUT"
 
-          echo "caddy_sha=${caddy_sha}" >> "$GITHUB_OUTPUT"
-          echo "l4_sha=${l4_sha}" >> "$GITHUB_OUTPUT"
-          echo "xcaddy_sha=${xcaddy_sha}" >> "$GITHUB_OUTPUT"
-
-          echo "Caddy   master HEAD: ${caddy_sha}"
-          echo "caddy-l4 master HEAD: ${l4_sha}"
-          echo "xcaddy  master HEAD: ${xcaddy_sha}"
-
-      - name: Setup Go (stable)
-        uses: actions/setup-go@v5
+      - uses: actions/setup-go@v5
         with:
           go-version: stable
 
-      - name: Install xcaddy (from master HEAD commit)
+      - name: Build + pack
         env:
-          XCADDY_SHA: ${{ steps.upstream.outputs.xcaddy_sha }}
-        run: |
-          go install github.com/caddyserver/xcaddy/cmd/xcaddy@${XCADDY_SHA}
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-          xcaddy version || true
-
-      - name: Build caddy with layer4 (all from master HEAD commits)
-        env:
-          GOOS: ${{ matrix.goos }}
+          GOOS: linux
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 0
           CADDY_SHA: ${{ steps.upstream.outputs.caddy_sha }}
           L4_SHA: ${{ steps.upstream.outputs.l4_sha }}
-        run: |
-          mkdir -p build
-          BIN_NAME="caddy-l4-${GOOS}-${GOARCH}"
-          echo "Building ${BIN_NAME} from:"
-          echo "  Caddy    = ${CADDY_SHA}"
-          echo "  caddy-l4 = ${L4_SHA}"
-
-          xcaddy build "${CADDY_SHA}" \
-            --with github.com/mholt/caddy-l4@${L4_SHA} \
-            --output "build/${BIN_NAME}"
-
-          chmod +x "build/${BIN_NAME}"
-          "build/${BIN_NAME}" version || true
-
-      - name: Pack tar.gz
-        env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
+          XCADDY_SHA: ${{ steps.upstream.outputs.xcaddy_sha }}
           CADDY_TAG: ${{ steps.caddy_tag.outputs.tag }}
         run: |
-          cd build
-          BIN_NAME="caddy-l4-${GOOS}-${GOARCH}"
-          TAR_NAME="${BIN_NAME}-${CADDY_TAG}.tar.gz"
-          tar -czf "${TAR_NAME}" "${BIN_NAME}"
-          echo "Created ${TAR_NAME}"
-          ls -lh
+          set -euo pipefail
 
-      - name: Publish GitHub Release
+          go install github.com/caddyserver/xcaddy/cmd/xcaddy@${XCADDY_SHA}
+          export PATH="$(go env GOPATH)/bin:${PATH}"
+
+          mkdir -p build
+          BIN="caddy-l4-${GOOS}-${GOARCH}"
+          xcaddy build "${CADDY_SHA}" \
+            --with github.com/mholt/caddy-l4@${L4_SHA} \
+            --output "build/${BIN}"
+
+          chmod +x "build/${BIN}"
+          tar -C build -czf "build/${BIN}-${CADDY_TAG}.tar.gz" "${BIN}"
+
+      - name: Publish GitHub Release (overwrite assets)
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.caddy_tag.outputs.tag }}
           name: "caddy-l4 ${{ steps.caddy_tag.outputs.tag }}"
           draft: false
           prerelease: false
+          overwrite_files: true
           files: |
             build/*.tar.gz
-          overwrite: true
           body: |
             Tag name follows upstream latest stable tag: ${{ steps.caddy_tag.outputs.tag }}
             Built from upstream master HEAD commits:
@@ -112,4 +74,3 @@ jobs:
             - xcaddy:   ${{ steps.upstream.outputs.xcaddy_sha }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          
