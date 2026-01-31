@@ -44,7 +44,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          go install github.com/caddyserver/xcaddy/cmd/xcaddy@${XCADDY_SHA}
+          env -u GOOS -u GOARCH -u CGO_ENABLED go install github.com/caddyserver/xcaddy/cmd/xcaddy@${XCADDY_SHA}
           export PATH="$(go env GOPATH)/bin:${PATH}"
 
           mkdir -p build
