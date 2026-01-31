@@ -54,6 +54,7 @@ jobs:
             --output "build/${BIN}"
 
           chmod +x "build/${BIN}"
+          strip "build/${BIN}" 2>/dev/null || true
           tar -C build -czf "build/${BIN}-${CADDY_TAG}.tar.gz" "${BIN}"
 
       - name: Publish GitHub Release (overwrite assets)
